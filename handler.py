@@ -48,3 +48,50 @@ class SimulatedHandler:
             print(f"[HANDLER] Dispense {step.volume_ul:g} µL into {step.destination}")
             self.executed.append(step)
         print(f"[HANDLER] Run complete: {len(self.executed)} steps executed")
+
+
+def execute_tool_call(name: str, arguments: dict, handler: SimulatedHandler) -> str:
+    """Execute a single tool call and return a result message for the LLM."""
+    if name != "transfer_liquid":
+        return f"Error: unknown tool '{name}'."
+
+    try:
+        step = validate_step(arguments)
+    except InvalidStepError as e:
+        return f"Error: {e}"
+
+    handler.execute([step])
+    return (
+        f"Success: transferred {step.volume_ul:g} µL "
+        f"from {step.source} to {step.destination}."
+    )
+
+class ClarificationRequested(Exception):
+    """Raised when the LLM asks the user for clarification."""
+
+    def __init__(self, question: str, reason: str) -> None:
+        super().__init__(f"{question} (reason: {reason})")
+        self.question = question
+        self.reason = reason
+
+
+def execute_tool_call(name: str, arguments: dict, handler: SimulatedHandler) -> str:
+    """Execute a single tool call and return a result message for the LLM."""
+    if name == "transfer_liquid":
+        try:
+            step = validate_step(arguments)
+        except InvalidStepError as e:
+            return f"Error: {e}"
+        handler.execute([step])
+        return (
+            f"Success: transferred {step.volume_ul:g} µL "
+            f"from {step.source} to {step.destination}."
+        )
+
+    if name == "request_clarification":
+        raise ClarificationRequested(
+            question=arguments.get("question", "Could you clarify the instruction?"),
+            reason=arguments.get("reason", "unspecified"),
+        )
+
+    return f"Error: unknown tool '{name}'."

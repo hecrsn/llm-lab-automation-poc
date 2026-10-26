@@ -61,5 +61,10 @@ def run(user_input: str) -> None:
 
 
 if __name__ == "__main__":
-    example = "Transfer 100 µL from A1 to B1, then 50 µL from B2 to C3."
+#    example = "Transfer 100 µL from A1 to B1, then 50 µL from B2 to C3."
+    example = "Transfer 10 µL from H12 to A1."
+#    example = "Move 25 µL from B2 to C3 and 30 µL from D4 to E5."
+#    example = "Transfer 200 µL from A1 to A1."
+#    example = "Transfer 100 µL from A1 to B1, then 50 µL from B2 to C3, then 75 µL from D4 to E5."
+#    example = "Pipette everything from A1 to B1."
     run(example)
