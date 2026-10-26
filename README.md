@@ -25,6 +25,10 @@ Two approaches are implemented:
    and receives a final natural-language summary. A clarification tool
    allows the model to ask the user instead of guessing.
 
+3. **Plan-first function calling** (`main_plan_first.py`): The LLM first
+   writes an ordered plan, then receives that plan and the instruction
+   while executing function calls.
+
 ## Why
 
 This project explores how LLMs can be connected to laboratory equipment
@@ -42,6 +46,7 @@ llm-lab-automation-poc/
 ├── handler.py                 # Simulated handler + validation + tool execution
 ├── main.py                    # JSON-mode entry point
 ├── main_function_calling.py   # Function-calling entry point
+├── main_plan_first.py         # Plan-first function-calling entry point
 ├── tests/
 │   └── test_handler.py
 ├── pytest.ini
@@ -96,6 +101,12 @@ python main.py
 
 ```bash
 python main_function_calling.py
+```
+
+**Plan-first function calling:**
+
+```bash
+python main_plan_first.py
 ```
 
 ### 4. Run tests
@@ -189,6 +200,70 @@ Root causes:
 3. **Confidently wrong output.** The final natural-language summary
    reported success for actions that were not performed.
 
+### Failure case 2: temporal order and scope (after adding tools)
+
+Input (German):
+
+```
+Wells A1 bis C12 werden mit Agonist A befüllt, D1 bis F12 mit Agonist B.
+Sauge davor 200 µl aus allen Wells ab.
+```
+
+After adding the `fill_wells` and `aspirate_wells` tools, the model
+correctly had tools that could represent the rectangular ranges. However,
+it produced this sequence:
+
+1. Fill A1-C12 with Agonist A.
+2. Fill D1-F12 with Agonist B.
+3. Aspirate from D1-F12 only.
+
+The new tools fixed range semantics: each range can be expressed as one
+tool call and expanded into its wells by the handler. They did not fix
+temporal ordering or scope/anaphora resolution. The word "davor" (before)
+should have put aspiration first, and "allen Wells" (all wells) referred
+to both named ranges, A1-C12 and D1-F12. The model aspirated only 36 of
+the 72 wells and did so after the fills.
+
+The final summary incorrectly claimed: "aus allen Wells abgesaugt"
+(aspirated from all wells). This was inaccurate both in scope and order.
+
+**Conclusion:** Providing the right tools is necessary but not sufficient.
+Small models struggle with temporal ordering and anaphora resolution. A
+planning layer that requires the model to state ordered steps explicitly
+before execution is intended to resolve both issues by exposing the
+intended order and affected ranges before tool calls begin. The initial
+plan-first run below shows that the plan must also be checked before
+execution; simply asking for a plan is not enough.
+
+The model's plan-first output for this input was:
+
+```
+1. Bezeichne alle Wells von A1 bis C12 als Zielgruppe für Agonist A.
+2. Bezeichne alle Wells von D1 bis F12 als Zielgruppe für Agonist B.
+3. Sauge 200 µl aus allen Wells ab.
+```
+
+This plan put aspiration last and did not list the two ranges explicitly
+for that step. The execution loop then filled both ranges, inventing a
+volume of 2000 µL per well, and aspirated 200 µL from A1-F12 afterward.
+The summary matched those performed operations, but the operations did
+not match the requested order and the fill volume was not specified by
+the user. This run demonstrates that an unvalidated plan does not resolve
+the model's ordering and scope errors.
+
+The function-calling entry points now also validate tool-call volumes
+against action-associated quantities in the original instruction. If a
+fill volume is omitted or the model borrows a quantity from a different
+action, execution stops with a clarification request before any calls in
+that tool-call batch are performed. Fill and dispense calls also require
+the reagent's source well, and that source well must be explicitly stated
+alongside the reagent in the instruction. Target locations are checked
+against the request, including the association between each reagent and
+its destination well or range. Missing or invented source or target
+locations trigger clarification before the batch executes. These checks
+address unsupported tool arguments; they do not guarantee correct temporal
+ordering or scope.
+
 ### Limitations of `llama3.1:8b` for tool use
 
 - Tool calling works for simple, single-intent instructions.
@@ -202,22 +277,28 @@ Root causes:
 
 Based on the observed failures, a production-grade system would need:
 
-1. **Dedicated tools** for `aspirate`, `dispense`, `fill_wells` and
+1. **Plan-first execution.** Require the model to list the ordered steps
+   and affected ranges before executing tools, then execute the plan in
+   that order.
+2. **Validate tool arguments against the instruction.** Reject
+   action parameters such as volumes that the user did not explicitly
+   provide for that action, and ask for clarification before execution.
+3. **Dedicated tools** for `aspirate`, `dispense`, `fill_wells` and
    `aspirate_wells`, so the model is not forced to map every intent
    onto `transfer_liquid`.
-2. **Explicit range decomposition.** Either provide a `fill_wells(range)`
+4. **Explicit range decomposition.** Either provide a `fill_wells(range)`
    tool that accepts a well range, or add a pre-processing step that
    expands ranges into individual wells before the LLM sees them.
-3. **A validation layer** that checks whether the number and type of
+5. **A validation layer** that checks whether the number and type of
    tool calls match the intent. For example, an instruction covering 36
    wells should produce at least 36 operations - 15 calls should trigger
    a warning and abort.
-4. **A confirmation step** for multi-well or multi-step operations:
+6. **A confirmation step** for multi-well or multi-step operations:
    show the planned sequence to the user before execution.
-5. **A larger model or a planning layer** for complex instructions.
+7. **A larger model** for complex instructions.
    `llama3.1:8b` is sufficient for single transfers but not for
    multi-intent laboratory workflows.
-6. **A retry loop with corrective prompt** when the model produces
+8. **A retry loop with corrective prompt** when the model produces
    invalid JSON or ignores tool schemas.
 
 ## Possible extensions
